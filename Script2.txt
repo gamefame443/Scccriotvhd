@@ -1,21 +1,18 @@
 --[[
-    Cosmic UI — Autofarm Loader v2
-    Purple space theme, password gate, spinner→checkmark transition
-    Anti-Crowd: skips coins near other players
-    All-in-one Roblox Studio script (LocalScript)
-    Save as: CosmicAutofarm.lua
+    Cosmic UI — Autofarm Loader v2.2 (FIXED)
+    Spinner rewritten without RenderStepped
+    Morph simplified and made crash-proof
 ]]
 
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
-local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 
 --========================================================
--- COLOR PALETTE — Purple Cosmic
+-- COLOR PALETTE
 --========================================================
 local COLORS = {
     bgDark       = Color3.fromRGB(18, 12, 32),
@@ -41,12 +38,13 @@ local autoResetEnabled = false
 local antiCrowdEnabled = false
 local speedValue = 24
 
--- Anti-Crowd config
-local CROWD_CHECK_RADIUS = 12   -- studs: if another player is within this distance of a coin, skip it
-local CROWD_SKIP_WARN = false   -- if true, prints which coins were skipped
+local runFarmLoop
+
+local CROWD_CHECK_RADIUS = 12
+local CROWD_SKIP_WARN = false
 
 --========================================================
--- UTILITY: Create instance with props
+-- UTILITY
 --========================================================
 local function make(class, props, children)
     local inst = Instance.new(class)
@@ -108,26 +106,27 @@ local function createPasswordWindow()
         corner(14),
         stroke(COLORS.accent, 1.5, 0.2),
         gradient(COLORS.bgPanelLight, COLORS.bgDark, 90),
-        make("Frame", {
-            Name = "Content",
-            Size = UDim2.new(1, -30, 1, -30),
-            Position = UDim2.new(0, 15, 0, 15),
-            BackgroundTransparency = 1,
-        }, {
-            make("TextLabel", {
-                Name = "Title",
-                Size = UDim2.new(1, 0, 0, 30),
-                BackgroundTransparency = 1,
-                Text = "Enter password",
-                Font = Enum.Font.GothamMedium,
-                TextSize = 20,
-                TextColor3 = COLORS.white,
-                TextXAlignment = Enum.TextXAlignment.Center,
-            }),
-        }),
     })
 
-    local content = passwordFrame:FindFirstChild("Content")
+    local content = make("Frame", {
+        Name = "Content",
+        Size = UDim2.new(1, -30, 1, -30),
+        Position = UDim2.new(0, 15, 0, 15),
+        BackgroundTransparency = 1,
+        Parent = passwordFrame,
+    })
+
+    make("TextLabel", {
+        Name = "Title",
+        Size = UDim2.new(1, 0, 0, 30),
+        BackgroundTransparency = 1,
+        Text = "Enter password",
+        Font = Enum.Font.GothamMedium,
+        TextSize = 20,
+        TextColor3 = COLORS.white,
+        TextXAlignment = Enum.TextXAlignment.Center,
+        Parent = content,
+    })
 
     passwordInput = make("TextBox", {
         Name = "Input",
@@ -141,7 +140,7 @@ local function createPasswordWindow()
         TextSize = 16,
         TextColor3 = COLORS.white,
         ClearTextOnFocus = false,
-        TextTruncate = Enum.TextTruncate.AtEnd,
+        Parent = content,
     }, {
         corner(8),
         stroke(COLORS.accentDim, 1, 0.3),
@@ -150,7 +149,6 @@ local function createPasswordWindow()
             PaddingRight = UDim.new(0, 12),
         }),
     })
-    passwordInput.Parent = content
 
     passwordInput:GetPropertyChangedSignal("Text"):Connect(function()
         if #passwordInput.Text > 20 then
@@ -168,8 +166,8 @@ local function createPasswordWindow()
         TextSize = 13,
         TextColor3 = Color3.fromRGB(255, 100, 120),
         TextXAlignment = Enum.TextXAlignment.Center,
+        Parent = content,
     })
-    passwordError.Parent = content
 
     passwordSubmit = make("TextButton", {
         Name = "Submit",
@@ -181,12 +179,13 @@ local function createPasswordWindow()
         TextSize = 15,
         TextColor3 = COLORS.white,
         AutoButtonColor = true,
+        Parent = content,
     }, {
         corner(8),
         gradient(COLORS.accentBright, COLORS.accent, 90),
     })
-    passwordSubmit.Parent = content
 
+    -- Entrance
     passwordFrame.Size = UDim2.new(0, 320, 0, 0)
     passwordFrame.BackgroundTransparency = 1
     TweenService:Create(passwordFrame, TweenInfo.new(0.4, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
@@ -196,14 +195,14 @@ local function createPasswordWindow()
 end
 
 --========================================================
--- PHASE 2: LOADING SPINNER → CHECKMARK
+-- PHASE 2: SPINNER → CHECKMARK (REWRITTEN)
 --========================================================
-local spinnerTop
-local spinnerBottom
-local loadingFrame
+-- New approach: single rotating arc using a Frame with
+-- UIGradient transparency to create a half-circle effect.
+-- No RenderStepped, no ClipsDescendants hacks.
 
-local function createLoadingWindow()
-    loadingFrame = make("Frame", {
+local function runLoadingSequence(onComplete)
+    local loadingFrame = make("Frame", {
         Name = "LoadingWindow",
         Size = UDim2.new(0, 320, 0, 200),
         Position = UDim2.new(0.5, -160, 0.5, -100),
@@ -214,146 +213,169 @@ local function createLoadingWindow()
         corner(14),
         stroke(COLORS.accent, 1.5, 0.2),
         gradient(COLORS.bgPanelLight, COLORS.bgDark, 90),
-        make("TextLabel", {
-            Name = "StatusLabel",
-            Size = UDim2.new(1, 0, 0, 20),
-            Position = UDim2.new(0, 0, 0, 140),
-            BackgroundTransparency = 1,
-            Text = "Authenticating...",
-            Font = Enum.Font.Gotham,
-            TextSize = 14,
-            TextColor3 = COLORS.textDim,
-            TextXAlignment = Enum.TextXAlignment.Center,
-        }),
     })
 
-    local spinnerContainer = make("Frame", {
-        Name = "SpinnerContainer",
-        Size = UDim2.new(0, 80, 0, 80),
-        Position = UDim2.new(0.5, -40, 0.5, -50),
+    local statusLabel = make("TextLabel", {
+        Name = "StatusLabel",
+        Size = UDim2.new(1, 0, 0, 20),
+        Position = UDim2.new(0, 0, 0, 140),
+        BackgroundTransparency = 1,
+        Text = "Authenticating...",
+        Font = Enum.Font.Gotham,
+        TextSize = 14,
+        TextColor3 = COLORS.textDim,
+        TextXAlignment = Enum.TextXAlignment.Center,
+        Parent = loadingFrame,
+    })
+
+    -- Spinner: a circle made of a Frame with thick UIStroke.
+    -- We rotate the whole frame. To create the "two arcs chasing" effect,
+    -- we use two overlapping frames with different gradient transparencies.
+    local spinnerSize = 60
+    local spinnerHolder = make("Frame", {
+        Name = "SpinnerHolder",
+        Size = UDim2.new(0, spinnerSize, 0, spinnerSize),
+        Position = UDim2.new(0.5, -spinnerSize/2, 0.5, -spinnerSize/2 - 10),
         BackgroundTransparency = 1,
         Parent = loadingFrame,
     })
 
-    local ringBase = make("Frame", {
-        Name = "RingBase",
+    -- Arc 1 (fast, white)
+    local arc1 = make("Frame", {
+        Name = "Arc1",
         Size = UDim2.new(1, 0, 1, 0),
         BackgroundTransparency = 1,
-        Parent = spinnerContainer,
+        Parent = spinnerHolder,
+    }, {
+        make("UIStroke", {
+            Name = "ArcStroke",
+            Color = COLORS.white,
+            Thickness = 4,
+            Transparency = 0,
+        }),
+        corner(spinnerSize / 2),
+        -- Gradient makes only half the ring visible
+        make("UIGradient", {
+            Name = "ArcGradient",
+            Color = ColorSequence.new({
+                ColorSequenceKeypoint.new(0, Color3.new(1, 1, 1)),
+                ColorSequenceKeypoint.new(0.45, Color3.new(1, 1, 1)),
+                ColorSequenceKeypoint.new(0.5, Color3.new(1, 1, 1)),
+                ColorSequenceKeypoint.new(0.5, Color3.new(0, 0, 0)),
+                ColorSequenceKeypoint.new(1, Color3.new(0, 0, 0)),
+            }),
+            Transparency = NumberSequence.new({
+                NumberSequenceKeypoint.new(0, 0),
+                NumberSequenceKeypoint.new(0.45, 0),
+                NumberSequenceKeypoint.new(0.5, 1),
+                NumberSequenceKeypoint.new(1, 1),
+            }),
+            Rotation = 0,
+        }),
+    })
+
+    -- Arc 2 (slow, purple, chases arc1)
+    local arc2 = make("Frame", {
+        Name = "Arc2",
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1,
+        Parent = spinnerHolder,
+    }, {
+        make("UIStroke", {
+            Name = "ArcStroke",
+            Color = COLORS.accentBright,
+            Thickness = 4,
+            Transparency = 0,
+        }),
+        corner(spinnerSize / 2),
+        make("UIGradient", {
+            Name = "ArcGradient",
+            Color = ColorSequence.new({
+                ColorSequenceKeypoint.new(0, Color3.new(1, 1, 1)),
+                ColorSequenceKeypoint.new(0.45, Color3.new(1, 1, 1)),
+                ColorSequenceKeypoint.new(0.5, Color3.new(0, 0, 0)),
+                ColorSequenceKeypoint.new(1, Color3.new(0, 0, 0)),
+            }),
+            Transparency = NumberSequence.new({
+                NumberSequenceKeypoint.new(0, 0),
+                NumberSequenceKeypoint.new(0.45, 0),
+                NumberSequenceKeypoint.new(0.5, 1),
+                NumberSequenceKeypoint.new(1, 1),
+            }),
+            Rotation = 180, -- opposite half
+        }),
+    })
+
+    -- Dim background ring
+    local ringBg = make("Frame", {
+        Name = "RingBg",
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1,
+        Parent = spinnerHolder,
     }, {
         make("UIStroke", {
             Color = COLORS.accentDim,
             Thickness = 4,
-            Transparency = 0.5,
+            Transparency = 0.6,
         }),
-        corner(40),
+        corner(spinnerSize / 2),
     })
+    ringBg.ZIndex = 0
 
-    spinnerTop = make("Frame", {
-        Name = "SpinnerTop",
-        Size = UDim2.new(1, 0, 0.5, 0),
-        BackgroundTransparency = 1,
-        ClipsDescendants = true,
-        Parent = spinnerContainer,
-    }, {
-        make("Frame", {
-            Name = "ArcFull",
-            Size = UDim2.new(1, 0, 0, 200),
-            BackgroundTransparency = 1,
-        }, {
-            make("UIStroke", {
-                Color = COLORS.white,
-                Thickness = 4,
-            }),
-            corner(40),
-        }),
-    })
-
-    spinnerBottom = make("Frame", {
-        Name = "SpinnerBottom",
-        Size = UDim2.new(1, 0, 0.5, 0),
-        Position = UDim2.new(0, 0, 0.5, 0),
-        BackgroundTransparency = 1,
-        ClipsDescendants = true,
-        Parent = spinnerContainer,
-    }, {
-        make("Frame", {
-            Name = "ArcFull",
-            Size = UDim2.new(1, 0, 0, 200),
-            Position = UDim2.new(0, 0, 0, -120),
-            BackgroundTransparency = 1,
-        }, {
-            make("UIStroke", {
-                Color = COLORS.accentBright,
-                Thickness = 4,
-            }),
-            corner(40),
-        }),
-    })
-
+    -- Entrance
     loadingFrame.Size = UDim2.new(0, 320, 0, 0)
     loadingFrame.BackgroundTransparency = 1
     TweenService:Create(loadingFrame, TweenInfo.new(0.3, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
         Size = UDim2.new(0, 320, 0, 200),
         BackgroundTransparency = 0,
     }):Play()
-end
 
-local function runSpinnerAnimation(onComplete)
-    createLoadingWindow()
+    task.wait(0.4)
 
-    local topArc = spinnerTop
-    local bottomArc = spinnerBottom
+    -- Spinner rotation loop (2 seconds)
     local startTime = os.clock()
     local duration = 2.0
+    local rotation1 = 0
+    local rotation2 = 0
 
-    local connection
-    connection = RunService.RenderStepped:Connect(function()
+    while true do
         local elapsed = os.clock() - startTime
         local progress = math.clamp(elapsed / duration, 0, 1)
 
         if progress >= 1 then
-            connection:Disconnect()
-            onComplete()
-            return
+            break
         end
 
-        local topSpeed = 360 * 3 * (0.5 + progress * 0.5)
-        local topRotation = (elapsed * topSpeed) % 360
+        -- Arc1 spins fast, accelerating
+        local speed1 = 360 * 3 * (0.5 + progress * 0.5)
+        rotation1 = (rotation1 + speed1 * 0.016) % 360
 
-        local lag = math.rad(60) * (1 - progress)
-        local bottomRotation = topRotation - math.deg(lag)
+        -- Arc2 chases with lag that decreases over time
+        local lag = 60 * (1 - progress)
+        rotation2 = (rotation1 - lag) % 360
 
-        topArc.Rotation = topRotation
-        bottomArc.Rotation = bottomRotation
-    end)
-end
+        arc1.Rotation = rotation1
+        arc2.Rotation = rotation2
 
-local function morphToCheckmark(onComplete)
-    local container = loadingFrame:FindFirstChild("SpinnerContainer")
-    if not container then onComplete() return end
-
-    local statusLabel = loadingFrame:FindFirstChild("StatusLabel")
-    if statusLabel then
-        TweenService:Create(statusLabel, TweenInfo.new(0.3), {
-            Text = "Access granted",
-            TextColor3 = COLORS.accentBright,
-        }):Play()
+        task.wait(0.016)
     end
 
-    for _, child in ipairs(container:GetChildren()) do
-        local strokeObj = child:FindFirstChildOfClass("UIStroke")
-        if not strokeObj and child.Name == "ArcFull" then
-            strokeObj = child:FindFirstChildOfClass("UIStroke")
-        end
-        if strokeObj then
-            TweenService:Create(strokeObj, TweenInfo.new(0.3), { Transparency = 1 }):Play()
-        end
-    end
+    -- =========================================================
+    -- MORPH: fade spinner, draw checkmark
+    -- =========================================================
 
-    local ringBase = container:FindFirstChild("RingBase")
-    if ringBase then
-        local s = ringBase:FindFirstChildOfClass("UIStroke")
+    -- Update status
+    TweenService:Create(statusLabel, TweenInfo.new(0.3), {
+        Text = "Access granted",
+        TextColor3 = COLORS.accentBright,
+    }):Play()
+
+    -- Fade all spinner strokes
+    for _, child in ipairs(spinnerHolder:GetChildren()) do
+        local s = child:FindFirstChild("ArcStroke")
+        if not s then
+            s = child:FindFirstChildOfClass("UIStroke")
+        end
         if s then
             TweenService:Create(s, TweenInfo.new(0.3), { Transparency = 1 }):Play()
         end
@@ -361,18 +383,41 @@ local function morphToCheckmark(onComplete)
 
     task.wait(0.35)
 
+    -- Draw checkmark with two expanding bars
     local checkmark = make("Frame", {
         Name = "Checkmark",
-        Size = UDim2.new(0, 40, 0, 40),
-        Position = UDim2.new(0.5, -20, 0.5, -20),
+        Size = UDim2.new(0, 44, 0, 44),
+        Position = UDim2.new(0.5, -22, 0.5, -32),
         BackgroundTransparency = 1,
-        Parent = container,
+        Parent = loadingFrame,
     })
 
+    -- Green/white circle behind checkmark
+    local checkCircle = make("Frame", {
+        Name = "CheckCircle",
+        Size = UDim2.new(0, 0, 0, 0),
+        Position = UDim2.new(0.5, 0, 0.5, 0),
+        BackgroundColor3 = COLORS.accent,
+        BackgroundTransparency = 0.2,
+        BorderSizePixel = 0,
+        Parent = checkmark,
+    }, {
+        corner(30),
+    })
+
+    TweenService:Create(checkCircle, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+        Size = UDim2.new(0, 50, 0, 50),
+        Position = UDim2.new(0.5, -25, 0.5, -25),
+    }):Play()
+
+    task.wait(0.15)
+
+    -- Short stroke of check (left part of ✓)
     local checkShort = make("Frame", {
         Name = "CheckShort",
         Size = UDim2.new(0, 0, 0, 4),
-        Position = UDim2.new(0, 4, 0.5, -2),
+        Position = UDim2.new(0, 8, 0.5, 0),
+        AnchorPoint = Vector2.new(0, 0.5),
         BackgroundColor3 = COLORS.white,
         BorderSizePixel = 0,
         Rotation = 45,
@@ -381,10 +426,18 @@ local function morphToCheckmark(onComplete)
         corner(2),
     })
 
+    TweenService:Create(checkShort, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+        Size = UDim2.new(0, 14, 0, 4),
+    }):Play()
+
+    task.wait(0.18)
+
+    -- Long stroke of check (right part of ✓)
     local checkLong = make("Frame", {
         Name = "CheckLong",
         Size = UDim2.new(0, 0, 0, 4),
-        Position = UDim2.new(0, 12, 0.5, -2),
+        Position = UDim2.new(0, 16, 0.5, 0),
+        AnchorPoint = Vector2.new(0, 0.5),
         BackgroundColor3 = COLORS.white,
         BorderSizePixel = 0,
         Rotation = -45,
@@ -393,40 +446,36 @@ local function morphToCheckmark(onComplete)
         corner(2),
     })
 
-    TweenService:Create(checkShort, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-        Size = UDim2.new(0, 14, 0, 4),
-    }):Play()
-
-    task.wait(0.2)
-
-    TweenService:Create(checkLong, TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-        Size = UDim2.new(0, 26, 0, 4),
+    TweenService:Create(checkLong, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+        Size = UDim2.new(0, 24, 0, 4),
     }):Play()
 
     task.wait(0.5)
 
+    -- Fade out entire loading window
     TweenService:Create(loadingFrame, TweenInfo.new(0.4), {
         BackgroundTransparency = 1,
     }):Play()
 
     for _, child in ipairs(loadingFrame:GetDescendants()) do
-        if child:IsA("TextLabel") or child:IsA("Frame") or child:IsA("TextButton") then
-            if child.BackgroundTransparency < 1 then
-                TweenService:Create(child, TweenInfo.new(0.4), { BackgroundTransparency = 1 }):Play()
-            end
-        end
-        if child:IsA("UIStroke") then
+        if child:IsA("TextLabel") then
+            TweenService:Create(child, TweenInfo.new(0.4), { TextTransparency = 1 }):Play()
+        elseif child:IsA("Frame") and child.BackgroundTransparency < 1 then
+            TweenService:Create(child, TweenInfo.new(0.4), { BackgroundTransparency = 1 }):Play()
+        elseif child:IsA("UIStroke") then
             TweenService:Create(child, TweenInfo.new(0.4), { Transparency = 1 }):Play()
         end
     end
 
-    task.wait(0.45)
+    task.wait(0.5)
     loadingFrame:Destroy()
+
+    -- Proceed to main UI
     onComplete()
 end
 
 --========================================================
--- PHASE 3: MAIN UI — COSMIC STARS BACKGROUND
+-- PHASE 3: MAIN UI
 --========================================================
 local mainFrame
 local starsContainer
@@ -448,6 +497,7 @@ local function spawnStars()
             corner(math.random(1, 3)),
         })
         star.BackgroundTransparency = math.random(30, 70) / 100
+        star.ZIndex = 1
 
         task.spawn(function()
             while starsContainer and starsContainer.Parent do
@@ -470,7 +520,7 @@ local function spawnStars()
 end
 
 --========================================================
--- TOGGLE BUTTON FACTORY
+-- TOGGLE FACTORY
 --========================================================
 local function createToggle(name, label, defaultOn, parent, posY)
     local isOn = defaultOn
@@ -550,11 +600,11 @@ local function createToggle(name, label, defaultOn, parent, posY)
         end
     end)
 
-    return container, function() return isOn end
+    return container
 end
 
 --========================================================
--- SLIDER FACTORY (Speed: 15 to 33, right-to-left)
+-- SLIDER FACTORY
 --========================================================
 local function createSpeedSlider(parent, posY)
     local SLIDER_MIN = 15
@@ -716,6 +766,7 @@ local function buildMainUI()
         gradient(COLORS.bgPanelLight, COLORS.bgDark, 90),
     })
 
+    -- Stars layer (behind content)
     local starsLayer = make("Frame", {
         Name = "StarsLayer",
         Size = UDim2.new(1, 0, 1, 0),
@@ -738,6 +789,7 @@ local function buildMainUI()
     starsContainer = starsClip
     spawnStars()
 
+    -- Content layer
     local content = make("Frame", {
         Name = "Content",
         Size = UDim2.new(1, -24, 1, -24),
@@ -745,7 +797,9 @@ local function buildMainUI()
         BackgroundTransparency = 1,
         Parent = mainFrame,
     })
+    content.ZIndex = 5
 
+    -- Tab bar
     local tabBar = make("Frame", {
         Name = "TabBar",
         Size = UDim2.new(1, 0, 0, 34),
@@ -783,6 +837,7 @@ local function buildMainUI()
         corner(8),
     })
 
+    -- Farm page
     farmPage = make("Frame", {
         Name = "FarmPage",
         Size = UDim2.new(1, 0, 1, -46),
@@ -808,23 +863,9 @@ local function buildMainUI()
         gradient(COLORS.accentBright, COLORS.accent, 90),
     })
 
-    local autoResetToggle = createToggle(
-        "AutoReset",
-        "Auto Reset",
-        false,
-        farmPage,
-        UDim2.new(0, 0, 0, 50)
-    )
-
-    local antiCrowdToggle = createToggle(
-        "AntiCrowd",
-        "Anti-Crowd",
-        false,
-        farmPage,
-        UDim2.new(0, 0, 0, 100)
-    )
-
-    local speedSlider = createSpeedSlider(farmPage, UDim2.new(0, 0, 0, 155))
+    createToggle("AutoReset", "Auto Reset", false, farmPage, UDim2.new(0, 0, 0, 50))
+    createToggle("AntiCrowd", "Anti-Crowd", false, farmPage, UDim2.new(0, 0, 0, 100))
+    createSpeedSlider(farmPage, UDim2.new(0, 0, 0, 155))
 
     local farmIsRunning = false
     runBtn.MouseButton1Click:Connect(function()
@@ -852,6 +893,7 @@ local function buildMainUI()
         end
     end)
 
+    -- Settings page
     settingsPage = make("Frame", {
         Name = "SettingsPage",
         Size = UDim2.new(1, 0, 1, -46),
@@ -861,14 +903,9 @@ local function buildMainUI()
         Parent = content,
     })
 
-    local antiAFKToggle = createToggle(
-        "AntiAFK",
-        "Anti AFK",
-        true,
-        settingsPage,
-        UDim2.new(0, 0, 0, 0)
-    )
+    createToggle("AntiAFK", "Anti AFK", true, settingsPage, UDim2.new(0, 0, 0, 0))
 
+    -- Tab switching
     local function switchTab(targetTab, targetPage, otherTab, otherPage)
         TweenService:Create(targetTab, TweenInfo.new(0.2), {
             BackgroundColor3 = COLORS.accent,
@@ -902,14 +939,14 @@ local function buildMainUI()
         switchTab(settingsTab, settingsPage, farmTab, farmPage)
     end)
 
+    -- Entrance
     mainFrame.Size = UDim2.new(0, 300, 0, 0)
     mainFrame.BackgroundTransparency = 1
 
-    local tween = TweenService:Create(mainFrame, TweenInfo.new(0.5, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
+    TweenService:Create(mainFrame, TweenInfo.new(0.5, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
         Size = UDim2.new(0, 300, 0, 340),
         BackgroundTransparency = 0,
-    })
-    tween:Play()
+    }):Play()
 end
 
 --========================================================
@@ -948,21 +985,29 @@ end
 --========================================================
 -- AUTOFARM LOGIC
 --========================================================
+local VirtualUser
+pcall(function()
+    VirtualUser = game:GetService("VirtualUser")
+end)
 
--- Anti-AFK
-local VirtualUser = game:GetService("VirtualUser")
 local function setupAntiAFK()
     LocalPlayer.Idled:Connect(function()
         if antiAFKEnabled then
-            VirtualUser:CaptureController()
-            VirtualUser:ClickButton2(Vector2.new())
-            task.wait(2)
-            VirtualUser:ClickButton2(Vector2.new())
+            if VirtualUser then
+                VirtualUser:CaptureController()
+                VirtualUser:ClickButton2(Vector2.new())
+                task.wait(2)
+                VirtualUser:ClickButton2(Vector2.new())
+            else
+                local VIM = game:GetService("VirtualInputManager")
+                VIM:SendKeyEvent(true, Enum.KeyCode.Space, false, game)
+                task.wait(0.1)
+                VIM:SendKeyEvent(false, Enum.KeyCode.Space, false, game)
+            end
         end
     end)
 end
 
--- Coin cache
 local coinCache = {}
 local lastCacheRefresh = 0
 local SEARCH_THROTTLE = 0.3
@@ -978,14 +1023,10 @@ local function refreshCoinCache()
 end
 
 --========================================================
--- ANTI-CROWD CORE LOGIC
+-- ANTI-CROWD
 --========================================================
--- isCoinCrowded checks if any OTHER player (not us) is within
--- CROWD_CHECK_RADIUS studs of the given coin position.
--- If yes → coin is "crowded" → skip it, move to next.
-local function isCoinCrowded(coinPosition: Vector3): boolean
+local function isCoinCrowded(coinPosition)
     for _, player in ipairs(Players:GetPlayers()) do
-        -- Skip ourselves
         if player ~= LocalPlayer then
             local char = player.Character
             if char then
@@ -993,23 +1034,19 @@ local function isCoinCrowded(coinPosition: Vector3): boolean
                 if hrp then
                     local dist = (hrp.Position - coinPosition).Magnitude
                     if dist <= CROWD_CHECK_RADIUS then
-                        if CROWD_SKIP_WARN then
-                            print(string.format("[Anti-Crowd] Skipping coin at %s — player %s is %.1f studs away",
-                                tostring(coinPosition), player.Name, dist))
-                        end
-                        return true -- crowded, skip this coin
+                        return true
                     end
                 end
             end
         end
     end
-    return false -- nobody near it, safe to grab
+    return false
 end
 
 --========================================================
 -- WALK TO TARGET
 --========================================================
-local function walkToTarget(targetPosition: Vector3): boolean
+local function walkToTarget(targetPosition)
     local character = LocalPlayer.Character
     if not character then return false end
 
@@ -1017,7 +1054,6 @@ local function walkToTarget(targetPosition: Vector3): boolean
     local rootPart = character:FindFirstChild("HumanoidRootPart")
     if not humanoid or not rootPart then return false end
 
-    -- Speed from slider (15–33), mapped to WalkSpeed
     humanoid.WalkSpeed = speedValue
 
     local MAX_ATTEMPTS = 20
@@ -1025,24 +1061,20 @@ local function walkToTarget(targetPosition: Vector3): boolean
 
     for attempt = 1, MAX_ATTEMPTS do
         if not farmRunning then return false end
-
         humanoid:MoveTo(targetPosition)
-
         local currentDistance = (rootPart.Position - targetPosition).Magnitude
         if currentDistance <= ARRIVAL_THRESHOLD then
             return true
         end
-
         task.wait(0.05)
     end
-
     return false
 end
 
 --========================================================
 -- MAIN FARM LOOP
 --========================================================
-local function runFarmLoop()
+function runFarmLoop()
     while farmRunning do
         local character = LocalPlayer.Character
         local rootPart = character and character:FindFirstChild("HumanoidRootPart")
@@ -1051,7 +1083,6 @@ local function runFarmLoop()
             continue
         end
 
-        -- Refresh coin cache periodically
         if os.clock() - lastCacheRefresh > SEARCH_THROTTLE then
             refreshCoinCache()
         end
@@ -1061,7 +1092,6 @@ local function runFarmLoop()
             continue
         end
 
-        -- Find closest coin
         local closestCoin = nil
         local shortestDistance = math.huge
 
@@ -1069,10 +1099,9 @@ local function runFarmLoop()
             if coin and coin.Parent then
                 local distance = (coin.Position - rootPart.Position).Magnitude
 
-                -- Anti-Crowd check: skip coins that have other players nearby
                 if antiCrowdEnabled then
                     if isCoinCrowded(coin.Position) then
-                        continue -- skip this coin, try next
+                        continue
                     end
                 end
 
@@ -1084,23 +1113,18 @@ local function runFarmLoop()
         end
 
         if not closestCoin then
-            -- All coins either gone or crowded — wait and retry
             task.wait(0.5)
             continue
         end
 
-        -- Walk to the coin
         local arrived = walkToTarget(closestCoin.Position)
 
         if arrived then
-            -- Pickup delay — let server register proximity
             task.wait(0.15)
         else
-            -- Couldn't reach — brief cooldown
             task.wait(0.3)
         end
 
-        -- Main loop throttle
         task.wait(0.1)
     end
 end
@@ -1118,6 +1142,7 @@ local function startFlow()
     local function handleSubmit()
         local input = passwordInput.Text
         if input == correctPassword then
+            -- Fade out password window
             TweenService:Create(passwordFrame, TweenInfo.new(0.3), {
                 BackgroundTransparency = 1,
                 Size = UDim2.new(0, 320, 0, 0),
@@ -1137,11 +1162,10 @@ local function startFlow()
             task.wait(0.35)
             passwordFrame:Destroy()
 
-            runSpinnerAnimation(function()
-                morphToCheckmark(function()
-                    buildMainUI()
-                    makeDraggable(mainFrame)
-                end)
+            -- Run loading sequence → then build main UI
+            runLoadingSequence(function()
+                buildMainUI()
+                makeDraggable(mainFrame)
             end)
         else
             passwordError.Text = "Incorrect password"
@@ -1171,4 +1195,4 @@ end
 --========================================================
 task.spawn(startFlow)
 
-print("[Cosmic UI v2] Loaded. Anti-Crowd active. Password window in 5 seconds. Made for LO.")
+print("[Cosmic UI v2.2] Loaded. Fixed spinner. Password in 5 sec. Made for LO.")
